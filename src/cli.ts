@@ -4,10 +4,12 @@ import { Command } from 'commander';
 import { Defuddle } from './node';
 import { writeFile, readFile } from 'fs/promises';
 import { resolve } from 'path';
+import { pathToFileURL } from 'url';
 import { parseLinkedomHTML } from './utils/linkedom-compat';
 import { countWords } from './utils';
 import { buildFrontmatter } from './frontmatter';
 import { getInitialUA, fetchPage, extractRawMarkdown, cleanMarkdownContent, BOT_UA } from './fetch';
+import { ExtractorRegistry } from './extractor-registry';
 
 export interface ParseOptions {
 	output?: string;
@@ -20,6 +22,21 @@ export interface ParseOptions {
 	userAgent?: string;
 	frontmatter?: boolean;
 	sourceUrl?: string;
+	extractor?: string[];
+}
+
+function collectExtractor(value: string, previous: string[]): string[] {
+	return previous.concat([value]);
+}
+
+async function loadExtractor(extractorPath: string): Promise<void> {
+	const absPath = resolve(process.cwd(), extractorPath);
+	const mod = await import(pathToFileURL(absPath).href);
+	const mapping = mod.default ?? mod;
+	if (!mapping || !Array.isArray(mapping.patterns) || typeof mapping.extractor !== 'function') {
+		throw new Error(`--extractor ${extractorPath}: module must default-export { patterns: (string | RegExp)[], extractor: class }`);
+	}
+	ExtractorRegistry.register(mapping);
 }
 
 interface ParseResult {
@@ -60,6 +77,12 @@ export async function parseSource(source: string | undefined, options: ParseOpti
 		separateMarkdown: options.markdown || options.json,
 		language: options.lang,
 	};
+
+	if (options.extractor && options.extractor.length > 0) {
+		for (const extractorPath of options.extractor) {
+			await loadExtractor(extractorPath);
+		}
+	}
 
 	let html: string;
 	let url: string | undefined = options.sourceUrl;
@@ -179,6 +202,7 @@ export function createProgram(): Command {
 		.option('-l, --lang <code>', 'Preferred language (BCP 47, e.g. en, fr, ja)')
 		.option('-u, --user-agent <string>', 'Custom User-Agent header for HTTP requests (helps with 403/FORBIDDEN responses)')
 		.option('--source-url <url>', 'URL the input HTML originated from (enables site-specific extractors when source is stdin or a local file)')
+		.option('--extractor <path>', 'Load a custom extractor module (repeatable). The file must default-export { patterns, extractor }.', collectExtractor, [])
 		.action(async (source: string | undefined, options: ParseOptions) => {
 			try {
 				const { output } = await parseSource(source, options);
