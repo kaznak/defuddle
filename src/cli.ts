@@ -24,6 +24,18 @@ export interface ParseOptions {
 	frontmatter?: boolean;
 	sourceUrl?: string;
 	extractor?: string[];
+	// Removal toggles — default to enabled (the existing pipeline). The
+	// `--no-*` flag form lets users disable each step individually so they
+	// can inspect what would otherwise be stripped. Useful for developing
+	// site-specific extractors against a known-clean baseline.
+	contentPatterns?: boolean;
+	lowScoring?: boolean;
+	exactSelectors?: boolean;
+	partialSelectors?: boolean;
+	hiddenElements?: boolean;
+	smallImages?: boolean;
+	// `removeImages` defaults to `false` in the API; expose as positive flag.
+	removeImages?: boolean;
 }
 
 function collectExtractor(value: string, previous: string[]): string[] {
@@ -73,6 +85,13 @@ const ansi = {
 // Read version from package.json
 const version = require('../package.json').version;
 
+// Helper: emit a single-key object only when the value is defined. Used to
+// avoid passing `undefined` into the defuddle options spread, which would
+// override the library's default with `undefined`.
+function maybe<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
+	return value === undefined ? {} : ({ [key]: value } as Record<K, V>);
+}
+
 export async function readStdin(input: NodeJS.ReadStream = process.stdin): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const chunks: string[] = [];
@@ -91,11 +110,22 @@ export async function parseSource(source: string | undefined, options: ParseOpti
 		options.markdown = true;
 	}
 
+	// Build defuddle options. Removal toggles are only included when the
+	// caller actually specified a value — Defuddle's internal merge does
+	// `{ defaults, ...this.options }`, so an explicit `undefined` would
+	// shadow the default `true` and silently disable the removal pass.
 	const defuddleOpts = {
 		debug: options.debug,
 		markdown: options.markdown,
 		separateMarkdown: options.markdown || options.json,
 		language: options.lang,
+		...maybe('removeContentPatterns', options.contentPatterns),
+		...maybe('removeLowScoring', options.lowScoring),
+		...maybe('removeExactSelectors', options.exactSelectors),
+		...maybe('removePartialSelectors', options.partialSelectors),
+		...maybe('removeHiddenElements', options.hiddenElements),
+		...maybe('removeSmallImages', options.smallImages),
+		...maybe('removeImages', options.removeImages),
 	};
 
 	if (options.extractor && options.extractor.length > 0) {
@@ -254,6 +284,16 @@ export function createProgram(): Command {
 		.option('-u, --user-agent <string>', 'Custom User-Agent header for HTTP requests (helps with 403/FORBIDDEN responses)')
 		.option('--source-url <url>', 'URL the input HTML originated from (enables site-specific extractors when source is stdin or a local file)')
 		.option('--extractor <path>', 'Load a custom extractor module (repeatable). The file must default-export { patterns, extractor }.', collectExtractor, [])
+		// Removal toggles. Each `--no-*` flag disables a single removal pass
+		// so users (especially extractor authors) can isolate which step is
+		// stripping a given element.
+		.option('--no-content-patterns', 'Keep boilerplate patterns (read time, breadcrumb, metadata lists, newsletter signups, etc.)')
+		.option('--no-low-scoring', 'Keep low-scoring elements (skip the content scoring pass)')
+		.option('--no-exact-selectors', 'Keep elements matched by the exact-selector denylist (ads, scripts, JW Player, etc.)')
+		.option('--no-partial-selectors', 'Keep elements matched by the partial-selector denylist (class/id containing "ad-", "sidebar", "comment", etc.)')
+		.option('--no-hidden-elements', 'Keep CSS-hidden elements (display:none, visibility:hidden, opacity:0)')
+		.option('--no-small-images', 'Keep small images (skip the <100px image filter)')
+		.option('--remove-images', 'Remove all images, picture, and figure elements')
 		.action(async (source: string | undefined, options: ParseOptions) => {
 			try {
 				const { output, debugLog } = await parseSource(source, options);
